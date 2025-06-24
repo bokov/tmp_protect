@@ -65,12 +65,23 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
     size_limit=$(jq -r "$section_path.\"size-limit\" // empty" "$CONFIG_FILE")
     num_limit=$(jq -r "$section_path.\"num-limit\" // empty" "$CONFIG_FILE")
 
+    # Determine if this section has any inclusion/exclusion criteria
+    has_criteria=false
+    for key in ext_whitelist ext_blacklist regex_whitelist regex_blacklist max_age min_age max_size min_size num_limit size_limit; do
+        val=$(eval echo \$$key)
+        if [[ -n "$val" ]]; then
+            has_criteria=true
+            break
+        fi
+    done
+    
     # Convert JSON stringified lists to bash arrays
     eval "ext_whitelist=($ext_whitelist)"
     eval "ext_blacklist=($ext_blacklist)"
     eval "regex_whitelist=($regex_whitelist)"
     eval "regex_blacklist=($regex_blacklist)"
     eval "priority=($priority)"
+
 
     # Get top-level subdirectories of SOURCE_DIR
     readarray -t candidate_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d)
