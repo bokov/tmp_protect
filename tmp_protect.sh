@@ -82,46 +82,46 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
 
     # Loop through all candidate directories and apply rule if they match
     for dir_path in "${candidate_dirs[@]}"; do
-    if [[ "$dir_path" =~ $match_dir ]]; then
-        echo "  → Applying rules from [$section] to $dir_path"
+        if [[ "$dir_path" =~ $match_dir ]]; then
+            echo "  → Applying rules from [$section] to $dir_path"
 
-        if [[ ! -d "$dir_path" ]]; then
-        echo "  [!] Skipped: $dir_path does not exist or is not a directory"
-        continue
-        fi
-
-        find "$dir_path" -mindepth 1 -maxdepth 1 -type f | while read -r path; do
-        name=$(basename "$path")
-
-        if ! is_readable_file "$path"; then
-            log_entry "$section" "unreadable" "" "" "" "" "$path" ""
+            if [[ ! -d "$dir_path" ]]; then
+            echo "  [!] Skipped: $dir_path does not exist or is not a directory"
             continue
-        fi
-
-        #uid=$(safe_stat_uid "$path" || echo "?")
-        #[[ " ${UID_LIST[*]} " =~ " $uid " ]] || continue
-
-        if ! uid=$(safe_stat_uid "$path"); then
-            uid="?"
-        fi
-        uid_allowed=false
-        for allowed_uid in "${UID_LIST[@]}"; do
-            if [[ "$uid" == "$allowed_uid" ]]; then
-                uid_allowed=true
-                break
             fi
-        done
-        $uid_allowed || continue
+
+            find "$dir_path" -mindepth 1 -maxdepth 1 -type f | while read -r path; do
+            name=$(basename "$path")
+
+                if ! is_readable_file "$path"; then
+                    log_entry "$section" "unreadable" "" "" "" "" "$path" ""
+                    continue
+                fi
+
+                #uid=$(safe_stat_uid "$path" || echo "?")
+                #[[ " ${UID_LIST[*]} " =~ " $uid " ]] || continue
+
+                if ! uid=$(safe_stat_uid "$path"); then
+                    uid="?"
+                fi
+                uid_allowed=false
+                for allowed_uid in "${UID_LIST[@]}"; do
+                    if [[ "$uid" == "$allowed_uid" ]]; then
+                        uid_allowed=true
+                        break
+                    fi
+                done
+                $uid_allowed || continue
 
 
-        
-        size=$(safe_stat_size "$path" || echo 0)
-        mtime=$(safe_stat_mtime "$path" || echo 0)
-        age=$((now - mtime))
+                
+                size=$(safe_stat_size "$path" || echo 0)
+                mtime=$(safe_stat_mtime "$path" || echo 0)
+                age=$((now - mtime))
 
-        # No filters currently applied for dlinstall
-        log_entry "$section" "" "" "$size" "$uid" "$age" "$path" ""
-        done
-    fi
+                # No filters currently applied for dlinstall
+                log_entry "$section" "" "" "$size" "$uid" "$age" "$path" ""
+            done
+        fi
     done
 done 
