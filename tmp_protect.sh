@@ -48,29 +48,29 @@ log_entry() {
 
 # --- Loop through all sections ---
 jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
-  section_path=".section[\"$section\"]"
+    section_path=".section[\"$section\"]"
 
-  # Read all supported fields, defaulting to empty or safe values
-  action=$(jq -r "$section_path.action // \"log\"" "$CONFIG_FILE")
-  match_dir=$(jq -r "$section_path.match_dir // empty" "$CONFIG_FILE")
-  ext_whitelist=$(jq -r "$section_path.extensions_whitelist // empty | @sh" "$CONFIG_FILE")
-  ext_blacklist=$(jq -r "$section_path.extensions_blacklist // empty | @sh" "$CONFIG_FILE")
-  regex_whitelist=$(jq -r "$section_path.regexp_whitelist // empty | @sh" "$CONFIG_FILE")
-  regex_blacklist=$(jq -r "$section_path.regexp_blacklist // empty | @sh" "$CONFIG_FILE")
-  max_age=$(jq -r "$section_path.\"max-age\" // empty" "$CONFIG_FILE")
-  min_age=$(jq -r "$section_path.\"min-age\" // empty" "$CONFIG_FILE")
-  max_size=$(jq -r "$section_path.\"max-size\" // empty" "$CONFIG_FILE")
-  min_size=$(jq -r "$section_path.\"min-size\" // empty" "$CONFIG_FILE")
-  priority=$(jq -r "$section_path.\"prioritize-by\" // empty | @sh" "$CONFIG_FILE")
-  size_limit=$(jq -r "$section_path.\"size-limit\" // empty" "$CONFIG_FILE")
-  num_limit=$(jq -r "$section_path.\"num-limit\" // empty" "$CONFIG_FILE")
+    # Read all supported fields, defaulting to empty or safe values
+    action=$(jq -r "$section_path.action // \"log\"" "$CONFIG_FILE")
+    match_dir=$(jq -r "$section_path.match_dir // empty" "$CONFIG_FILE")
+    ext_whitelist=$(jq -r "$section_path.extensions_whitelist // empty | @sh" "$CONFIG_FILE")
+    ext_blacklist=$(jq -r "$section_path.extensions_blacklist // empty | @sh" "$CONFIG_FILE")
+    regex_whitelist=$(jq -r "$section_path.regexp_whitelist // empty | @sh" "$CONFIG_FILE")
+    regex_blacklist=$(jq -r "$section_path.regexp_blacklist // empty | @sh" "$CONFIG_FILE")
+    max_age=$(jq -r "$section_path.\"max-age\" // empty" "$CONFIG_FILE")
+    min_age=$(jq -r "$section_path.\"min-age\" // empty" "$CONFIG_FILE")
+    max_size=$(jq -r "$section_path.\"max-size\" // empty" "$CONFIG_FILE")
+    min_size=$(jq -r "$section_path.\"min-size\" // empty" "$CONFIG_FILE")
+    priority=$(jq -r "$section_path.\"prioritize-by\" // empty | @sh" "$CONFIG_FILE")
+    size_limit=$(jq -r "$section_path.\"size-limit\" // empty" "$CONFIG_FILE")
+    num_limit=$(jq -r "$section_path.\"num-limit\" // empty" "$CONFIG_FILE")
 
-  # Convert JSON stringified lists to bash arrays
-  eval "ext_whitelist=($ext_whitelist)"
-  eval "ext_blacklist=($ext_blacklist)"
-  eval "regex_whitelist=($regex_whitelist)"
-  eval "regex_blacklist=($regex_blacklist)"
-  eval "priority=($priority)"
+    # Convert JSON stringified lists to bash arrays
+    eval "ext_whitelist=($ext_whitelist)"
+    eval "ext_blacklist=($ext_blacklist)"
+    eval "regex_whitelist=($regex_whitelist)"
+    eval "regex_blacklist=($regex_blacklist)"
+    eval "priority=($priority)"
 
     # Get top-level subdirectories of SOURCE_DIR
     readarray -t candidate_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d)
