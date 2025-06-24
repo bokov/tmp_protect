@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+#set -x
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_CONFIG="$SCRIPT_DIR/tmp_protect_config.json"
@@ -31,6 +32,8 @@ command -v jq >/dev/null || { echo "jq is required." >&2; exit 1; }
 SOURCE_DIR=$(jq -r '.global.source_dir' "$CONFIG_FILE")
 DEST_DIR=$(jq -r '.global.destination_dir' "$CONFIG_FILE")
 readarray -t UID_LIST < <(jq -r '.global.uids[]' "$CONFIG_FILE")
+now=$(date +%s)
+
 
 # --- Helpers ---
 safe_stat_size() { stat -c%s "$1" 2>/dev/null || return 1; }
@@ -40,7 +43,7 @@ is_readable_file() { [[ -f "$1" && -r "$1" ]]; }
 
 log_entry() {
   # Format: section, inclusion-criteria-failed, exclusion-criteria-met, size, owner, age, source-path, destination-path
-  printf "%s,%s,%s,%s,%s,%s,%s,%s\n" "$@"
+  printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$@"
 }
 
 # --- Loop through all sections ---
@@ -69,29 +72,42 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
   eval "regex_blacklist=($regex_blacklist)"
   eval "priority=($priority)"
 
-  # Only act on the dlinstall section for now
-  [[ "$match_dir" == "/tmp/dlinstall" ]] || continue
+    # Get top-level subdirectories of SOURCE_DIR
+    readarray -t candidate_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d)
 
-  echo "Processing section [$section] for directory $match_dir (action=$action)"
+    # Only act on sections that use match_dir (regex mode)
+    [[ -n "$match_dir" ]] || continue
 
-  now=$(date +%s)
+    echo "Section [$section] looking for directories matching regex: $match_dir"
 
-  find "$match_dir" -mindepth 1 -maxdepth 1 -type f | while read -r path; do
-    name=$(basename "$path")
+    # Loop through all candidate directories and apply rule if they match
+    for dir_path in "${candidate_dirs[@]}"; do
+    if [[ "$dir_path" =~ $match_dir ]]; then
+        echo "  → Applying rules from [$section] to $dir_path"
 
-    if ! is_readable_file "$path"; then
-      log_entry "$section" "unreadable" "" "" "" "" "$path" ""
-      continue
+        if [[ ! -d "$dir_path" ]]; then
+        echo "  [!] Skipped: $dir_path does not exist or is not a directory"
+        continue
+        fi
+
+        find "$dir_path" -mindepth 1 -maxdepth 1 -type f | while read -r path; do
+        name=$(basename "$path")
+
+        if ! is_readable_file "$path"; then
+            log_entry "$section" "unreadable" "" "" "" "" "$path" ""
+            continue
+        fi
+
+        uid=$(safe_stat_uid "$path" || echo "?")
+        [[ " ${UID_LIST[*]} " =~ " $uid " ]] || continue
+
+        size=$(safe_stat_size "$path" || echo 0)
+        mtime=$(safe_stat_mtime "$path" || echo 0)
+        age=$((now - mtime))
+
+        # No filters currently applied for dlinstall
+        log_entry "$section" "" "" "$size" "$uid" "$age" "$path" ""
+        done
     fi
-
-    uid=$(safe_stat_uid "$path" || echo "?")
-    [[ " ${UID_LIST[*]} " =~ " $uid " ]] || continue
-
-    size=$(safe_stat_size "$path" || echo 0)
-    mtime=$(safe_stat_mtime "$path" || echo 0)
-    age=$((now - mtime))
-
-    # No filters currently defined for this section → log all files
-    log_entry "$section" "" "" "$size" "$uid" "$age" "$path" ""
-  done
-done
+    done
+done 
