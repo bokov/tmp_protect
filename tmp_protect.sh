@@ -1,17 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
-# Defaults
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_CONFIG="$SCRIPT_DIR/tmp_protect_config.json"
 CONFIG_FILE="$DEFAULT_CONFIG"
-DRY_RUN=false
+DRY_RUN=true  # Always forced to true for now
 
-# Parse command-line options
+# --- Parse options ---
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)
-      DRY_RUN=true
+      echo "(--dry-run detected, but dry-run is forced to true internally)"
       shift
       ;;
     --config)
@@ -25,34 +24,74 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Check if jq is available
-if ! command -v jq >/dev/null; then
-  echo "Error: 'jq' is required but not installed." >&2
-  exit 1
-fi
+# --- Prereqs ---
+command -v jq >/dev/null || { echo "jq is required." >&2; exit 1; }
 
-# Validate config file
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "Error: Config file not found at $CONFIG_FILE" >&2
-  exit 1
-fi
-
-# Load global config
+# --- Global config ---
 SOURCE_DIR=$(jq -r '.global.source_dir' "$CONFIG_FILE")
 DEST_DIR=$(jq -r '.global.destination_dir' "$CONFIG_FILE")
-UIDS=$(jq -r '.global.uids[]' "$CONFIG_FILE")
+readarray -t UID_LIST < <(jq -r '.global.uids[]' "$CONFIG_FILE")
 
-echo "Parsed global config:"
-echo "  Source: $SOURCE_DIR"
-echo "  Destination: $DEST_DIR"
-echo "  UIDs: $UIDS"
-echo "  Dry run: $DRY_RUN"
-echo ""
+# --- Helpers ---
+safe_stat_size() { stat -c%s "$1" 2>/dev/null || return 1; }
+safe_stat_mtime() { stat -c%Y "$1" 2>/dev/null || return 1; }
+safe_stat_uid() { stat -c%u "$1" 2>/dev/null || return 1; }
+is_readable_file() { [[ -f "$1" && -r "$1" ]]; }
 
-# List all configured sections (by name)
-echo "Configured sections:"
+log_entry() {
+  # Format: section, inclusion-criteria-failed, exclusion-criteria-met, size, owner, age, source-path, destination-path
+  printf "%s,%s,%s,%s,%s,%s,%s,%s\n" "$@"
+}
+
+# --- Loop through all sections ---
 jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
-  desc=$(jq -r ".section[\"$section\"].description // \"(no description)\"" "$CONFIG_FILE")
-  action=$(jq -r ".section[\"$section\"].action // \"log\"" "$CONFIG_FILE")
-  echo "  [$section] action=$action  desc=$desc"
+  section_path=".section[\"$section\"]"
+
+  # Read all supported fields, defaulting to empty or safe values
+  action=$(jq -r "$section_path.action // \"log\"" "$CONFIG_FILE")
+  match_dir=$(jq -r "$section_path.match_dir // empty" "$CONFIG_FILE")
+  ext_whitelist=$(jq -r "$section_path.extensions_whitelist // empty | @sh" "$CONFIG_FILE")
+  ext_blacklist=$(jq -r "$section_path.extensions_blacklist // empty | @sh" "$CONFIG_FILE")
+  regex_whitelist=$(jq -r "$section_path.regexp_whitelist // empty | @sh" "$CONFIG_FILE")
+  regex_blacklist=$(jq -r "$section_path.regexp_blacklist // empty | @sh" "$CONFIG_FILE")
+  max_age=$(jq -r "$section_path.\"max-age\" // empty" "$CONFIG_FILE")
+  min_age=$(jq -r "$section_path.\"min-age\" // empty" "$CONFIG_FILE")
+  max_size=$(jq -r "$section_path.\"max-size\" // empty" "$CONFIG_FILE")
+  min_size=$(jq -r "$section_path.\"min-size\" // empty" "$CONFIG_FILE")
+  priority=$(jq -r "$section_path.\"prioritize-by\" // empty | @sh" "$CONFIG_FILE")
+  size_limit=$(jq -r "$section_path.\"size-limit\" // empty" "$CONFIG_FILE")
+  num_limit=$(jq -r "$section_path.\"num-limit\" // empty" "$CONFIG_FILE")
+
+  # Convert JSON stringified lists to bash arrays
+  eval "ext_whitelist=($ext_whitelist)"
+  eval "ext_blacklist=($ext_blacklist)"
+  eval "regex_whitelist=($regex_whitelist)"
+  eval "regex_blacklist=($regex_blacklist)"
+  eval "priority=($priority)"
+
+  # Only act on the dlinstall section for now
+  [[ "$match_dir" == "/tmp/dlinstall" ]] || continue
+
+  echo "Processing section [$section] for directory $match_dir (action=$action)"
+
+  now=$(date +%s)
+
+  find "$match_dir" -mindepth 1 -maxdepth 1 -type f | while read -r path; do
+    name=$(basename "$path")
+
+    if ! is_readable_file "$path"; then
+      log_entry "$section" "unreadable" "" "" "" "" "$path" ""
+      continue
+    fi
+
+    uid=$(safe_stat_uid "$path" || echo "?")
+    [[ " ${UID_LIST[*]} " =~ " $uid " ]] || continue
+
+    size=$(safe_stat_size "$path" || echo 0)
+    mtime=$(safe_stat_mtime "$path" || echo 0)
+    age=$((now - mtime))
+
+    # No filters currently defined for this section → log all files
+    log_entry "$section" "" "" "$size" "$uid" "$age" "$path" ""
+  done
 done
