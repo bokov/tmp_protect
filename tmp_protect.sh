@@ -98,9 +98,23 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
             continue
         fi
 
-        uid=$(safe_stat_uid "$path" || echo "?")
-        [[ " ${UID_LIST[*]} " =~ " $uid " ]] || continue
+        #uid=$(safe_stat_uid "$path" || echo "?")
+        #[[ " ${UID_LIST[*]} " =~ " $uid " ]] || continue
 
+        if ! uid=$(safe_stat_uid "$path"); then
+            uid="?"
+        fi
+        uid_allowed=false
+        for allowed_uid in "${UID_LIST[@]}"; do
+            if [[ "$uid" == "$allowed_uid" ]]; then
+                uid_allowed=true
+                break
+            fi
+        done
+        $uid_allowed || continue
+
+
+        
         size=$(safe_stat_size "$path" || echo 0)
         mtime=$(safe_stat_mtime "$path" || echo 0)
         age=$((now - mtime))
