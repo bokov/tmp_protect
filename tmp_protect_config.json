@@ -1,0 +1,58 @@
+{
+    "global": {
+      "source_dir": "/tmp",
+      "destination_dir": "/media/a/bigdata00/tmp_protect",
+      "uids": [1000]
+    },
+    "section": {
+      "top_level_files": {
+        "description": "Top-level files in /tmp",
+        "match": "top_level_files",
+        "action": "move",
+        "extensions_whitelist": ["csv", "pdf", "xlsx", "epub"],
+        "regexp_blacklist": ["^tmp_", "\\.tmp$"],
+        "max-age": 30,
+        "min-size": 1024,
+        "prioritize-by": ["age", "revsize"],
+        "size-limit": "500MB"
+      },
+      "top_level_nameless": {
+        "description": "Files without extensions at /tmp",
+        "match": "top_level_files",
+        "action": "move",
+        "extensions_whitelist": [""],
+        "min-size": 1024,
+        "max-age": 60,
+        "prioritize-by": ["size"],
+        "num-limit": 5
+      },
+      "dlinstall": {
+        "description": "/tmp/dlinstall",
+        "match_dir": "/tmp/dlinstall",
+        "action": "log"
+      },
+      "dlcontent": {
+        "description": "/tmp/dlcontent",
+        "match_dir": "/tmp/dlcontent",
+        "action": "move",
+        "max-age": 30,
+        "prioritize-by": ["age"]
+      },
+      "overflow": {
+        "description": "/tmp/overflow",
+        "match_dir": "/tmp/overflow",
+        "action": "move"
+      },
+      "git_dirty_or_ahead": {
+        "description": "Any Git repo that's dirty or ahead of origin",
+        "match_git_status": ["dirty", "ahead"],
+        "action": "move"
+      },
+      "other_top_level_dirs": {
+        "description": "Catch-all for unclassified top-level dirs",
+        "match": "unmatched_top_level_dirs",
+        "action": "log"
+      }
+    }
+  }
+  
