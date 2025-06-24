@@ -119,8 +119,43 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
                 mtime=$(safe_stat_mtime "$path" || echo 0)
                 age=$((now - mtime))
 
-                # No filters currently applied for dlinstall
-                log_entry "$section" "" "" "$size" "$uid" "$age" "$path" ""
+
+
+                # Determine exclusion/inclusion criteria
+                criteria_failed=""
+                excluded_reason=""
+                dest_path=""
+
+                # Apply max-age filter (if defined)
+                if [[ -n "$max_age" ]]; then
+                    cutoff_seconds=$((max_age * 86400))
+                    if (( age > cutoff_seconds )); then
+                        excluded_reason="age>${max_age}d"
+                    fi
+                fi
+
+                # Handle action
+                if [[ "$action" == "move" && -z "$excluded_reason" ]]; then
+                    rel_path="${path#$SOURCE_DIR/}"  # relative to source
+                    dest_path="$DEST_DIR/$rel_path"
+
+                    if $DRY_RUN; then
+                        echo "[dry-run] would move: $path → $dest_path"
+                    else
+                        mkdir -p "$(dirname "$dest_path")"
+                        mv "$path" "$dest_path"
+                        echo "Moved: $path → $dest_path"
+                    fi
+                else
+                    # Not eligible for move, or action is 'log'
+                    :
+                fi
+
+                log_entry "$section" "$criteria_failed" "$excluded_reason" "$size" "$uid" "$age" "$path" "$dest_path"
+
+
+
+
             done
         fi
     done
