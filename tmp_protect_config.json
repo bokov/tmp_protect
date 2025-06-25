@@ -2,6 +2,7 @@
     "global": {
       "source_dir": "/tmp",
       "destination_dir": "/media/a/bigdata00/tmp_protect",
+      "match_git_status": ["dirty", "ahead"],
       "uids": [1000]
     },
     "section": {
@@ -41,11 +42,6 @@
       "overflow": {
         "description": "/tmp/overflow",
         "match_dir": "/tmp/overflow",
-        "action": "move"
-      },
-      "git_dirty_or_ahead": {
-        "description": "Any Git repo that's dirty or ahead of origin",
-        "match_git_status": ["dirty", "ahead"],
         "action": "move"
       },
       "other_top_level_dirs": {
