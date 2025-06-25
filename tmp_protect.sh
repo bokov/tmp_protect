@@ -35,6 +35,7 @@ MATCH_GIT_STATUS=$(jq -r '.global.match_git_status // empty' "$CONFIG_FILE")
 
 readarray -t UID_LIST < <(jq -r '.global.uids[]' "$CONFIG_FILE")
 now=$(date +%s)
+declare -A DIR_SEEN
 
 
 # --- Helpers ---
@@ -47,6 +48,57 @@ log_entry() {
   # Format: section, inclusion-criteria-failed, exclusion-criteria-met, size, owner, age, source-path, destination-path
   printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$@"
 }
+
+# Get top-level subdirectories of SOURCE_DIR
+readarray -t candidate_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d)
+
+for dir_path in "${candidate_dirs[@]}"; do
+
+    # Git protection logic (global)
+    if [[ -n "$MATCH_GIT_STATUS" && -d "$dir_path/.git" ]]; then
+        #echo "$dir_path is a git repo"
+        is_dirty=false
+        is_ahead=false
+        DIR_SEEN["$dir_path"]=1
+
+        if git -C "$dir_path" status --porcelain 2>/dev/null | grep -q '^[ M?]'; then
+            is_dirty=true
+        fi
+
+        if git -C "$dir_path" rev-parse --abbrev-ref HEAD &>/dev/null; then
+            ahead_count=$(git -C "$dir_path" rev-list --count --right-only origin/HEAD...HEAD 2>/dev/null || echo -1)
+            [[ "$ahead_count" != "0" ]] && is_ahead=true
+        fi
+
+        git_verdict="git"
+        match=false
+        if [[ "$MATCH_GIT_STATUS" == *dirty* && "$is_dirty" == true ]]; then
+            match=true
+            git_verdict="$git_verdict-dirty"
+        fi
+
+        if [[ "$MATCH_GIT_STATUS" == *ahead* && "$is_ahead" == true ]]; then
+            match=true
+            git_verdict="$git_verdict-ahead"
+        fi
+
+        if [[ "$match" == true ]]; then
+            dest_path="$DEST_DIR/${dir_path#$SOURCE_DIR/}"
+            if $DRY_RUN; then
+                echo "[dry-run] would move git repo: $dir_path → $dest_path"
+            else
+                mkdir -p "$dest_path"
+                cp -a "$dir_path" "$dest_path/.."
+                echo "Moved git repo: $dir_path → $dest_path"
+            fi
+            log_entry "git" "" "$git_verdict" "" "" "" "$dir_path" "$dest_path"
+        else
+            log_entry "git" "" "git-clean" "" "" "" "$dir_path" ""
+        fi
+
+        continue  # Always skip further processing of Git repos
+    fi
+done
 
 # --- Loop through all sections ---
 jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
@@ -84,58 +136,6 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
     eval "regex_blacklist=($regex_blacklist)"
     eval "priority=($priority)"
 
-
-    # Get top-level subdirectories of SOURCE_DIR
-    readarray -t candidate_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d)
-
-    for dir_path in "${candidate_dirs[@]}"; do
-
-        # Git protection logic (global)
-        if [[ -n "$MATCH_GIT_STATUS" && -d "$dir_path/.git" ]]; then
-            echo "$dir_path is a git repo"
-            is_dirty=false
-            is_ahead=false
-
-            if git -C "$dir_path" status --porcelain 2>/dev/null | grep -q '^[ M?]'; then
-                is_dirty=true
-            fi
-
-            if git -C "$dir_path" rev-parse --abbrev-ref HEAD &>/dev/null; then
-                ahead_count=$(git -C "$dir_path" rev-list --count --right-only origin/HEAD...HEAD 2>/dev/null || echo -1)
-                [[ "$ahead_count" != "0" ]] && is_ahead=true
-            fi
-
-            git_verdict="git"
-            match=false
-            if [[ "$MATCH_GIT_STATUS" == *dirty* && "$is_dirty" == true ]]; then
-                match=true
-                git_verdict="$git_verdict-dirty"
-            fi
-
-            if [[ "$MATCH_GIT_STATUS" == *ahead* && "$is_ahead" == true ]]; then
-                match=true
-                git_verdict="$git_verdict-ahead"
-            fi
-
-            if [[ "$match" == true ]]; then
-                dest_path="$DEST_DIR/${dir_path#$SOURCE_DIR/}"
-                if $DRY_RUN; then
-                    echo "[dry-run] would move git repo: $dir_path → $dest_path"
-                else
-                    mkdir -p "$dest_path"
-                    cp -a "$dir_path" "$dest_path/.."
-                    echo "Moved git repo: $dir_path → $dest_path"
-                fi
-                log_entry "$section" "" "$git_verdict" "" "" "" "$dir_path" "$dest_path"
-            else
-                log_entry "$section" "" "git-clean" "" "" "" "$dir_path" ""
-            fi
-
-            continue  # Always skip further processing of Git repos
-        fi
-    done
-
-
     # Only act on sections that use match_dir (regex mode)
     [[ -n "$match_dir" ]] || continue
 
@@ -143,7 +143,8 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
 
     # Loop through all candidate directories and apply rule if they match
     for dir_path in "${candidate_dirs[@]}"; do
-        if [[ "$dir_path" =~ $match_dir ]]; then
+        if [[ "$dir_path" =~ $match_dir && -z "${DIR_SEEN[$dir_path]:-}" ]];  then
+            DIR_SEEN["$dir_path"]=1
             echo "  → Applying rules from [$section] to $dir_path"
 
             if [[ ! -d "$dir_path" ]]; then
@@ -251,5 +252,30 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
 
             done
         fi
-    done
+    done    
 done 
+
+# --- Handle unmatched top-level dirs if configured ---
+if jq -e '.unmatched_dirs' "$CONFIG_FILE" > /dev/null; then
+  unmatched_action=$(jq -r '.unmatched_dirs.action // "log"' "$CONFIG_FILE")
+
+  #readarray -t all_top_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d)
+
+  for dir_path in "${candidate_dirs[@]}"; do
+    if [[ -z "${DIR_SEEN[$dir_path]:-}" ]]; then
+      dest_path="$DEST_DIR/${dir_path#$SOURCE_DIR/}"
+      if [[ "$unmatched_action" == "move" ]]; then
+        if $DRY_RUN; then
+          echo "[dry-run] would move unmatched dir: $dir_path → $dest_path"
+        else
+          mkdir -p "$dest_path"
+          cp -a "$dir_path" "$dest_path/.."
+          echo "Moved unmatched dir: $dir_path → $dest_path"
+        fi
+        log_entry "unmatched_dirs" "" "unmatched" "" "" "" "$dir_path" "$dest_path"
+      else
+        log_entry "unmatched_dirs" "" "unmatched" "" "" "" "$dir_path" ""
+      fi
+    fi
+  done
+fi
