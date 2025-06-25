@@ -328,6 +328,21 @@ while read -r section; do
                         fi
                     fi
 
+                    # Apply max-size filter (if defined)
+                    if [[ -n "$max_size" ]]; then
+                        if (( size > max_size )); then
+                            excluded_reason+="size>${max_size}B|"
+                        fi
+                    fi
+
+                    # Apply min-size filter (if defined)
+                    if [[ -n "$min_size" ]]; then
+                        if (( size < min_size )); then
+                            excluded_reason+="size<${min_size}B|"
+                        fi
+                    fi
+
+
                     criteria_met=$([[ -z $excluded_reason ]] && echo "true" || echo "false" )
 
                     # Handle action
