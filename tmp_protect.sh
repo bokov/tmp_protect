@@ -36,7 +36,8 @@ MATCH_GIT_STATUS=$(jq -r '.global.match_git_status // empty' "$CONFIG_FILE")
 readarray -t UID_LIST < <(jq -r '.global.uids[]' "$CONFIG_FILE")
 now=$(date +%s)
 declare -A DIR_SEEN
-
+DIR_SEEN["xxyyzz"]=1
+echo "created seen dirs: ${#DIR_SEEN[@]}"
 
 # --- Helpers ---
 safe_stat_size() { stat -c%s "$1" 2>/dev/null || return 1; }
@@ -50,7 +51,38 @@ log_entry() {
 }
 
 # Get top-level subdirectories of SOURCE_DIR
-readarray -t candidate_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d)
+#readarray -t candidate_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d)
+if [[ "${#UID_LIST[@]}" -eq 0 ]]; then
+  # No UID restriction
+  readarray -t candidate_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d ! -empty)
+else
+  # Build an OR pattern for UID filter
+  uid_expr=()
+  for uid in "${UID_LIST[@]}"; do
+    uid_expr+=("-uid" "$uid" "-o")
+  done
+  unset 'uid_expr[-1]'  # Remove trailing -o
+  echo "${uid_expr[@]}"
+  readarray -t candidate_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d \( "${uid_expr[@]}" \) ! -empty )  
+fi
+
+# below commented out because it's causing non-empty directories to be dropped
+# # remove directories that contain only empty directory hierarchies
+# for i in "${!candidate_dirs[@]}"; do
+#   dir="${candidate_dirs[$i]}"
+#   if ! find "$dir" -mindepth 1 | grep -q .; then
+#     unset 'candidate_dirs[i]'
+#   fi
+# done
+# # reindex array to remove gaps
+# candidate_dirs=("${candidate_dirs[@]}")
+
+# echo "Checking for airworld2 and uphouse"
+# [[ "${candidate_dirs[*]}" =~ /airworld2($|[[:space:]]) ]] && echo "airworld2 present"
+# [[ "${candidate_dirs[*]}" =~ /uphouse($|[[:space:]]) ]] && echo "uphouse present"
+
+echo "initial seen dirs: ${#DIR_SEEN[@]}"
+
 
 for dir_path in "${candidate_dirs[@]}"; do
 
@@ -60,6 +92,7 @@ for dir_path in "${candidate_dirs[@]}"; do
         is_dirty=false
         is_ahead=false
         DIR_SEEN["$dir_path"]=1
+        echo "git: adding $dir_path to seen dirs: ${#DIR_SEEN[@]}"; 
 
         if git -C "$dir_path" status --porcelain 2>/dev/null | grep -q '^[ M?]'; then
             is_dirty=true
@@ -98,15 +131,20 @@ for dir_path in "${candidate_dirs[@]}"; do
 
         continue  # Always skip further processing of Git repos
     fi
+    echo "git $dir_path seen dirs: ${#DIR_SEEN[@]}"
 done
 
+echo "before sections seen dirs: ${#DIR_SEEN[@]}"
+
 # --- Loop through all sections ---
-jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
+#jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
+while read -r section; do
     section_path=".section[\"$section\"]"
 
     # Read all supported fields, defaulting to empty or safe values
     action=$(jq -r "$section_path.action // \"log\"" "$CONFIG_FILE")
     match_dir=$(jq -r "$section_path.match_dir // empty" "$CONFIG_FILE")
+    readarray -t match_contents < <(jq -r "$section_path.match_contents // empty | .[]" "$CONFIG_FILE")
     ext_whitelist=$(jq -r "$section_path.extensions_whitelist // empty | @sh" "$CONFIG_FILE")
     ext_blacklist=$(jq -r "$section_path.extensions_blacklist // empty | @sh" "$CONFIG_FILE")
     regex_whitelist=$(jq -r "$section_path.regexp_whitelist // empty | @sh" "$CONFIG_FILE")
@@ -118,6 +156,8 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
     priority=$(jq -r "$section_path.\"prioritize-by\" // empty | @sh" "$CONFIG_FILE")
     size_limit=$(jq -r "$section_path.\"size-limit\" // empty" "$CONFIG_FILE")
     num_limit=$(jq -r "$section_path.\"num-limit\" // empty" "$CONFIG_FILE")
+
+    echo " match_contents: ${match_contents[*]}"
 
     # Determine if this section has any inclusion/exclusion criteria
     has_criteria=false
@@ -137,34 +177,60 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
     eval "priority=($priority)"
 
     # Only act on sections that use match_dir (regex mode)
-    [[ -n "$match_dir" ]] || continue
+    [[ -n "$match_dir" || "${#match_contents[@]}" -gt 0 ]] || continue
 
-    echo "Section [$section] looking for directories matching regex: $match_dir"
+    echo "Section [$section] looking for directories matching criteria" 
 
     # Loop through all candidate directories and apply rule if they match
     for dir_path in "${candidate_dirs[@]}"; do
-        if [[ "$dir_path" =~ $match_dir && -z "${DIR_SEEN[$dir_path]:-}" ]];  then
+
+        # if this directory has already been seen, don't bother with any other
+        # steps
+        if [[ -n "${DIR_SEEN[$dir_path]:-}" ]]; then echo "$section: $dir_path already seen"; continue; fi
+
+
+        # Check match_dir
+        dir_matches=false
+        if [[ -n "$match_dir" && "$dir_path" =~ $match_dir ]]; then
+            dir_matches=true
+        fi
+
+        contents_match=false
+        if [[ "${#match_contents[@]}" -gt 0 ]]; then
+            all_found=true
+
+            for regex in "${match_contents[@]}"; do
+                # For each required pattern, make sure at least one match exists in the directory
+                if ! find "$dir_path" -mindepth 1 -maxdepth 1 -printf '%f\n' | grep -E "$regex"; then
+                    all_found=false
+                    break
+                fi
+            done
+            #find "$dir_path" -mindepth 1 -maxdepth 1 -printf '%f\n' 
+            $all_found && contents_match=true
+        fi
+
+        if [[ "$dir_matches" == true || "$contents_match" == true ]];  then
             DIR_SEEN["$dir_path"]=1
-            echo "  → Applying rules from [$section] to $dir_path"
+            echo "$section: adding $dir_path to seen dirs: ${#DIR_SEEN[@]}"; 
+            
+            # ignore is for known temp stuff that doesn't need to show up in the 
+            # log just keep going without logging... also, the presence of 
+            # ignore overrides any inclusion or exclusion criteria-- why would
+            # you match files just for the purpose of ignoring them? 
+            if [[ "$action" == "ignore" ]]; then
+                continue
+            fi
 
             if [[ ! -d "$dir_path" ]]; then
                 echo "  [!] Skipped: $dir_path does not exist or is not a directory"
                 continue
             fi
+            
+            echo "  → Applying rules from [$section] to $dir_path"
 
             if ! $has_criteria; then
                 # Whole-directory mode
-                if ! uid=$(safe_stat_uid "$dir_path"); then
-                    uid="?"
-                fi
-                uid_allowed=false
-                for allowed_uid in "${UID_LIST[@]}"; do
-                    if [[ "$uid" == "$allowed_uid" ]]; then
-                        uid_allowed=true
-                        break
-                    fi
-                done
-                $uid_allowed || continue
 
                 size=$(du -sb "$dir_path" 2>/dev/null | cut -f1 || echo 0)
                 mtime=$(safe_stat_mtime "$dir_path" || echo 0)
@@ -179,103 +245,102 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
                         mv "$dir_path" "$dest_path"
                         echo "Moved directory: $dir_path → $dest_path"
                     fi
+                else
+                    dest_path=""
                 fi
 
                 log_entry "$section" "" "" "$size" "$uid" "$age" "$dir_path" "$dest_path"
-                continue
-            fi
+            else
 
-            # File-level logic (only reached if has_criteria=true)
-            find "$dir_path" -mindepth 1 -maxdepth 1 -type f | while read -r path; do
-                # [leave this whole block unchanged]
-            name=$(basename "$path")
+                # File-level logic (only reached if has_criteria=true)
+                find "$dir_path" -mindepth 1 -maxdepth 1 -type f | while read -r path; do
+                    #name=$(basename "$path")
 
-                if ! is_readable_file "$path"; then
-                    log_entry "$section" "unreadable" "" "" "" "" "$path" ""
-                    continue
-                fi
-
-                if ! uid=$(safe_stat_uid "$path"); then
-                    uid="?"
-                fi
-                uid_allowed=false
-                for allowed_uid in "${UID_LIST[@]}"; do
-                    if [[ "$uid" == "$allowed_uid" ]]; then
-                        uid_allowed=true
-                        break
+                    if ! is_readable_file "$path"; then
+                        log_entry "$section" "unreadable" "" "" "" "" "$path" ""
+                        continue
                     fi
-                done
-                $uid_allowed || continue
+                    
+                    size=$(safe_stat_size "$path" || echo 0)
+                    mtime=$(safe_stat_mtime "$path" || echo 0)
+                    age=$((now - mtime))
 
+                    # Determine exclusion/inclusion criteria
+                    criteria_failed=""
+                    excluded_reason=""
+                    dest_path=""
 
-                
-                size=$(safe_stat_size "$path" || echo 0)
-                mtime=$(safe_stat_mtime "$path" || echo 0)
-                age=$((now - mtime))
-
-
-
-                # Determine exclusion/inclusion criteria
-                criteria_failed=""
-                excluded_reason=""
-                dest_path=""
-
-                # Apply max-age filter (if defined)
-                if [[ -n "$max_age" ]]; then
-                    cutoff_seconds=$((max_age * 86400))
-                    if (( age > cutoff_seconds )); then
-                        excluded_reason="age>${max_age}d"
+                    # Apply max-age filter (if defined)
+                    if [[ -n "$max_age" ]]; then
+                        cutoff_seconds=$((max_age * 86400))
+                        if (( age > cutoff_seconds )); then
+                            excluded_reason="age>${max_age}d"
+                        fi
                     fi
-                fi
 
-                # Handle action
-                if [[ "$action" == "move" && -z "$excluded_reason" ]]; then
-                    rel_path="${path#$SOURCE_DIR/}"  # relative to source
-                    dest_path="$DEST_DIR/$rel_path"
+                    # Apply min-age filter (if defined)
+                    if [[ -n "$min_age" ]]; then
+                        cutoff_seconds=$((min_age * 86400))
+                        if (( age < cutoff_seconds )); then
+                            excluded_reason="age<${max_age}d"
+                        fi
+                    fi
 
-                    if $DRY_RUN; then
-                        echo "[dry-run] would move: $path → $dest_path"
+
+                    # Handle action
+                    if [[ "$action" == "move" && -z "$excluded_reason" ]]; then
+                        rel_path="${path#$SOURCE_DIR/}"  # relative to source
+                        dest_path="$DEST_DIR/$rel_path"
+
+                        if $DRY_RUN; then
+                            echo "[dry-run] would move: $path → $dest_path"
+                        else
+                            mkdir -p "$(dirname "$dest_path")"
+                            mv "$path" "$dest_path"
+                            echo "Moved: $path → $dest_path"
+                        fi
                     else
-                        mkdir -p "$(dirname "$dest_path")"
-                        mv "$path" "$dest_path"
-                        echo "Moved: $path → $dest_path"
+                        # Not eligible for move, or action is 'log'
+                        dest_path="" 
                     fi
-                else
-                    # Not eligible for move, or action is 'log'
-                    :
-                fi
 
-                log_entry "$section" "$criteria_failed" "$excluded_reason" "$size" "$uid" "$age" "$path" "$dest_path"
+                    log_entry "$section" "$criteria_failed" "$excluded_reason" "$size" "$uid" "$age" "$path" "$dest_path"
 
 
-
-
-            done
+                done
+        
+            fi         
+        
         fi
+        echo "dir $dir_path seen dirs: ${#DIR_SEEN[@]}"
     done    
-done 
+    echo "section $section seen dirs: ${#DIR_SEEN[@]}"
+done < <(jq -r '.section | keys[]' "$CONFIG_FILE")
+
+echo "before unmatched seen dirs: ${#DIR_SEEN[@]}"
 
 # --- Handle unmatched top-level dirs if configured ---
 if jq -e '.unmatched_dirs' "$CONFIG_FILE" > /dev/null; then
   unmatched_action=$(jq -r '.unmatched_dirs.action // "log"' "$CONFIG_FILE")
 
   #readarray -t all_top_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d)
+  echo "start of unmatched seen dirs: ${#DIR_SEEN[@]}"
 
   for dir_path in "${candidate_dirs[@]}"; do
-    if [[ -z "${DIR_SEEN[$dir_path]:-}" ]]; then
-      dest_path="$DEST_DIR/${dir_path#$SOURCE_DIR/}"
-      if [[ "$unmatched_action" == "move" ]]; then
+    if [[ -n "${DIR_SEEN[$dir_path]:-}" ]]; then echo "unmatched: $dir_path already seen"; continue; fi
+
+    dest_path="$DEST_DIR/${dir_path#$SOURCE_DIR/}"
+    if [[ "$unmatched_action" == "move" ]]; then
         if $DRY_RUN; then
-          echo "[dry-run] would move unmatched dir: $dir_path → $dest_path"
+            echo "[dry-run] would move unmatched dir: $dir_path → $dest_path"
         else
-          mkdir -p "$dest_path"
-          cp -a "$dir_path" "$dest_path/.."
-          echo "Moved unmatched dir: $dir_path → $dest_path"
+            mkdir -p "$dest_path"
+            cp -a "$dir_path" "$dest_path/.."
+            echo "Moved unmatched dir: $dir_path → $dest_path"
         fi
-        log_entry "unmatched_dirs" "" "unmatched" "" "" "" "$dir_path" "$dest_path"
-      else
-        log_entry "unmatched_dirs" "" "unmatched" "" "" "" "$dir_path" ""
-      fi
+    else
+        dest_path=""
     fi
+    log_entry "unmatched_dirs" "" "unmatched" "" "" "" "$dir_path" "$dest_path"
   done
 fi
