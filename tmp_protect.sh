@@ -50,6 +50,38 @@ log_entry() {
   printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$@"
 }
 
+handle_path_action() {
+    local section="$1"
+    local action="$2"
+    local path="$3"
+    local criteria_failed="${4:-}"
+    local excluded_reason="${5:-}"
+    local criteria_met="${6:-true}"  # default to true
+
+    local now="${now:-$(date +%s)}"
+    local uid size mtime age dest_path
+
+    uid=$(stat -c %u "$path")
+    size=$(du -sb "$path" 2>/dev/null | cut -f1 || echo 0)
+    mtime=$(safe_stat_mtime "$path" || echo 0)
+    age=$((now - mtime))
+    dest_path="$DEST_DIR/${path#$SOURCE_DIR/}"
+
+    if [[ "$action" == "move" && "$criteria_met" == "true" ]]; then
+        if $DRY_RUN; then
+            echo "[dry-run] would move: $path → $dest_path"
+        else
+            mkdir -p "$(dirname "$dest_path")"
+            mv "$path" "$dest_path"
+            echo "Moved: $path → $dest_path"
+        fi
+    else
+        dest_path=""
+    fi
+
+    log_entry "$section" "$criteria_failed" "$excluded_reason" "$size" "$uid" "$age" "$path" "$dest_path"
+}
+
 # Get top-level subdirectories of SOURCE_DIR
 #readarray -t candidate_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d)
 if [[ "${#UID_LIST[@]}" -eq 0 ]]; then
@@ -83,12 +115,11 @@ fi
 
 echo "initial seen dirs: ${#DIR_SEEN[@]}"
 
-
+# --- loop through and handle git directories ---
 for dir_path in "${candidate_dirs[@]}"; do
 
     # Git protection logic (global)
     if [[ -n "$MATCH_GIT_STATUS" && -d "$dir_path/.git" ]]; then
-        #echo "$dir_path is a git repo"
         is_dirty=false
         is_ahead=false
         DIR_SEEN["$dir_path"]=1
@@ -137,7 +168,6 @@ done
 echo "before sections seen dirs: ${#DIR_SEEN[@]}"
 
 # --- Loop through all sections ---
-#jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
 while read -r section; do
     section_path=".section[\"$section\"]"
 
@@ -157,7 +187,7 @@ while read -r section; do
     size_limit=$(jq -r "$section_path.\"size-limit\" // empty" "$CONFIG_FILE")
     num_limit=$(jq -r "$section_path.\"num-limit\" // empty" "$CONFIG_FILE")
 
-    echo " match_contents: ${match_contents[*]}"
+    #echo " match_contents: ${match_contents[*]}"
 
     # Determine if this section has any inclusion/exclusion criteria
     has_criteria=false
@@ -176,7 +206,7 @@ while read -r section; do
     eval "regex_blacklist=($regex_blacklist)"
     eval "priority=($priority)"
 
-    # Only act on sections that use match_dir (regex mode)
+    # Only act on sections that use match_dir or match_contents (regex mode)
     [[ -n "$match_dir" || "${#match_contents[@]}" -gt 0 ]] || continue
 
     echo "Section [$section] looking for directories matching criteria" 
@@ -231,31 +261,31 @@ while read -r section; do
 
             if ! $has_criteria; then
                 # Whole-directory mode
+                handle_path_action "$section" "$action" "$dir_path"
 
-                size=$(du -sb "$dir_path" 2>/dev/null | cut -f1 || echo 0)
-                mtime=$(safe_stat_mtime "$dir_path" || echo 0)
-                age=$((now - mtime))
-                dest_path="$DEST_DIR/${dir_path#$SOURCE_DIR/}"
+                # size=$(du -sb "$dir_path" 2>/dev/null | cut -f1 || echo 0)
+                # mtime=$(safe_stat_mtime "$dir_path" || echo 0)
+                # age=$((now - mtime))
+                # dest_path="$DEST_DIR/${dir_path#$SOURCE_DIR/}"
 
-                if [[ "$action" == "move" ]]; then
-                    if $DRY_RUN; then
-                        echo "[dry-run] would move directory: $dir_path → $dest_path"
-                    else
-                        mkdir -p "$(dirname "$dest_path")"
-                        mv "$dir_path" "$dest_path"
-                        echo "Moved directory: $dir_path → $dest_path"
-                    fi
-                else
-                    dest_path=""
-                fi
+                # if [[ "$action" == "move" ]]; then
+                #     if $DRY_RUN; then
+                #         echo "[dry-run] would move directory: $dir_path → $dest_path"
+                #     else
+                #         mkdir -p "$(dirname "$dest_path")"
+                #         mv "$dir_path" "$dest_path"
+                #         echo "Moved directory: $dir_path → $dest_path"
+                #     fi
+                # else
+                #     dest_path=""
+                # fi
 
-                log_entry "$section" "" "" "$size" "$uid" "$age" "$dir_path" "$dest_path"
+                # log_entry "$section" "" "" "$size" "$uid" "$age" "$dir_path" "$dest_path"
             else
 
                 # File-level logic (only reached if has_criteria=true)
                 find "$dir_path" -mindepth 1 -maxdepth 1 -type f | while read -r path; do
                     #name=$(basename "$path")
-
                     if ! is_readable_file "$path"; then
                         log_entry "$section" "unreadable" "" "" "" "" "$path" ""
                         continue
@@ -274,7 +304,7 @@ while read -r section; do
                     if [[ -n "$max_age" ]]; then
                         cutoff_seconds=$((max_age * 86400))
                         if (( age > cutoff_seconds )); then
-                            excluded_reason="age>${max_age}d"
+                            excluded_reason+="age>${max_age}d|"
                         fi
                     fi
 
@@ -282,29 +312,32 @@ while read -r section; do
                     if [[ -n "$min_age" ]]; then
                         cutoff_seconds=$((min_age * 86400))
                         if (( age < cutoff_seconds )); then
-                            excluded_reason="age<${max_age}d"
+                            excluded_reason+="age<${min_age}d|"
                         fi
                     fi
 
+                    criteria_met=$([[ -z $excluded_reason ]] && echo "true" || echo "false" )
 
                     # Handle action
-                    if [[ "$action" == "move" && -z "$excluded_reason" ]]; then
-                        rel_path="${path#$SOURCE_DIR/}"  # relative to source
-                        dest_path="$DEST_DIR/$rel_path"
+                    handle_path_action "$section" "$action" "$path" "$criteria_failed" "$excluded_reason" "$criteria_met"
 
-                        if $DRY_RUN; then
-                            echo "[dry-run] would move: $path → $dest_path"
-                        else
-                            mkdir -p "$(dirname "$dest_path")"
-                            mv "$path" "$dest_path"
-                            echo "Moved: $path → $dest_path"
-                        fi
-                    else
-                        # Not eligible for move, or action is 'log'
-                        dest_path="" 
-                    fi
+                    # if [[ "$action" == "move" && -z "$excluded_reason" ]]; then
+                    #     rel_path="${path#$SOURCE_DIR/}"  # relative to source
+                    #     dest_path="$DEST_DIR/$rel_path"
 
-                    log_entry "$section" "$criteria_failed" "$excluded_reason" "$size" "$uid" "$age" "$path" "$dest_path"
+                    #     if $DRY_RUN; then
+                    #         echo "[dry-run] would move: $path → $dest_path"
+                    #     else
+                    #         mkdir -p "$(dirname "$dest_path")"
+                    #         mv "$path" "$dest_path"
+                    #         echo "Moved: $path → $dest_path"
+                    #     fi
+                    # else
+                    #     # Not eligible for move, or action is 'log'
+                    #     dest_path="" 
+                    # fi
+
+                    # log_entry "$section" "$criteria_failed" "$excluded_reason" "$size" "$uid" "$age" "$path" "$dest_path"
 
 
                 done
