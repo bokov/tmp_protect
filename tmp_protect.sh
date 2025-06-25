@@ -31,6 +31,8 @@ command -v jq >/dev/null || { echo "jq is required." >&2; exit 1; }
 # --- Global config ---
 SOURCE_DIR=$(jq -r '.global.source_dir' "$CONFIG_FILE")
 DEST_DIR=$(jq -r '.global.destination_dir' "$CONFIG_FILE")
+MATCH_GIT_STATUS=$(jq -r '.global.match_git_status // empty' "$CONFIG_FILE")
+
 readarray -t UID_LIST < <(jq -r '.global.uids[]' "$CONFIG_FILE")
 now=$(date +%s)
 
@@ -74,7 +76,7 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
             break
         fi
     done
-    
+
     # Convert JSON stringified lists to bash arrays
     eval "ext_whitelist=($ext_whitelist)"
     eval "ext_blacklist=($ext_blacklist)"
@@ -85,6 +87,54 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
 
     # Get top-level subdirectories of SOURCE_DIR
     readarray -t candidate_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d)
+
+    for dir_path in "${candidate_dirs[@]}"; do
+
+        # Git protection logic (global)
+        if [[ -n "$MATCH_GIT_STATUS" && -d "$dir_path/.git" ]]; then
+            echo "$dir_path is a git repo"
+            is_dirty=false
+            is_ahead=false
+
+            if git -C "$dir_path" status --porcelain 2>/dev/null | grep -q '^[ M?]'; then
+                is_dirty=true
+            fi
+
+            if git -C "$dir_path" rev-parse --abbrev-ref HEAD &>/dev/null; then
+                ahead_count=$(git -C "$dir_path" rev-list --count --right-only origin/HEAD...HEAD 2>/dev/null || echo -1)
+                [[ "$ahead_count" != "0" ]] && is_ahead=true
+            fi
+
+            git_verdict="git"
+            match=false
+            if [[ "$MATCH_GIT_STATUS" == *dirty* && "$is_dirty" == true ]]; then
+                match=true
+                git_verdict="$git_verdict-dirty"
+            fi
+
+            if [[ "$MATCH_GIT_STATUS" == *ahead* && "$is_ahead" == true ]]; then
+                match=true
+                git_verdict="$git_verdict-ahead"
+            fi
+
+            if [[ "$match" == true ]]; then
+                dest_path="$DEST_DIR/${dir_path#$SOURCE_DIR/}"
+                if $DRY_RUN; then
+                    echo "[dry-run] would move git repo: $dir_path → $dest_path"
+                else
+                    mkdir -p "$dest_path"
+                    cp -a "$dir_path" "$dest_path/.."
+                    echo "Moved git repo: $dir_path → $dest_path"
+                fi
+                log_entry "$section" "" "$git_verdict" "" "" "" "$dir_path" "$dest_path"
+            else
+                log_entry "$section" "" "git-clean" "" "" "" "$dir_path" ""
+            fi
+
+            continue  # Always skip further processing of Git repos
+        fi
+    done
+
 
     # Only act on sections that use match_dir (regex mode)
     [[ -n "$match_dir" ]] || continue
@@ -97,20 +147,52 @@ jq -r '.section | keys[]' "$CONFIG_FILE" | while read -r section; do
             echo "  → Applying rules from [$section] to $dir_path"
 
             if [[ ! -d "$dir_path" ]]; then
-            echo "  [!] Skipped: $dir_path does not exist or is not a directory"
-            continue
+                echo "  [!] Skipped: $dir_path does not exist or is not a directory"
+                continue
             fi
 
+            if ! $has_criteria; then
+                # Whole-directory mode
+                if ! uid=$(safe_stat_uid "$dir_path"); then
+                    uid="?"
+                fi
+                uid_allowed=false
+                for allowed_uid in "${UID_LIST[@]}"; do
+                    if [[ "$uid" == "$allowed_uid" ]]; then
+                        uid_allowed=true
+                        break
+                    fi
+                done
+                $uid_allowed || continue
+
+                size=$(du -sb "$dir_path" 2>/dev/null | cut -f1 || echo 0)
+                mtime=$(safe_stat_mtime "$dir_path" || echo 0)
+                age=$((now - mtime))
+                dest_path="$DEST_DIR/${dir_path#$SOURCE_DIR/}"
+
+                if [[ "$action" == "move" ]]; then
+                    if $DRY_RUN; then
+                        echo "[dry-run] would move directory: $dir_path → $dest_path"
+                    else
+                        mkdir -p "$(dirname "$dest_path")"
+                        mv "$dir_path" "$dest_path"
+                        echo "Moved directory: $dir_path → $dest_path"
+                    fi
+                fi
+
+                log_entry "$section" "" "" "$size" "$uid" "$age" "$dir_path" "$dest_path"
+                continue
+            fi
+
+            # File-level logic (only reached if has_criteria=true)
             find "$dir_path" -mindepth 1 -maxdepth 1 -type f | while read -r path; do
+                # [leave this whole block unchanged]
             name=$(basename "$path")
 
                 if ! is_readable_file "$path"; then
                     log_entry "$section" "unreadable" "" "" "" "" "$path" ""
                     continue
                 fi
-
-                #uid=$(safe_stat_uid "$path" || echo "?")
-                #[[ " ${UID_LIST[*]} " =~ " $uid " ]] || continue
 
                 if ! uid=$(safe_stat_uid "$path"); then
                     uid="?"
