@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_CONFIG="$SCRIPT_DIR/tmp_protect_config.json"
 CONFIG_FILE="$DEFAULT_CONFIG"
 DRY_RUN=true  # Always forced to true for now
+DEBUG_LEVEL=1
 
 # --- Parse options ---
 while [[ $# -gt 0 ]]; do
@@ -37,7 +38,7 @@ readarray -t UID_LIST < <(jq -r '.global.uids[]' "$CONFIG_FILE")
 now=$(date +%s)
 declare -A DIR_SEEN
 DIR_SEEN["xxyyzz"]=1
-echo "created seen dirs: ${#DIR_SEEN[@]}"
+[[ $DEBUG_LEVEL -ge 3 ]] && echo "created seen dirs: ${#DIR_SEEN[@]}"
 
 # --- Helpers ---
 safe_stat_size() { stat -c%s "$1" 2>/dev/null || return 1; }
@@ -113,7 +114,7 @@ fi
 # [[ "${candidate_dirs[*]}" =~ /airworld2($|[[:space:]]) ]] && echo "airworld2 present"
 # [[ "${candidate_dirs[*]}" =~ /uphouse($|[[:space:]]) ]] && echo "uphouse present"
 
-echo "initial seen dirs: ${#DIR_SEEN[@]}"
+[[ $DEBUG_LEVEL -ge 3 ]] && echo "initial seen dirs: ${#DIR_SEEN[@]}"
 
 # --- loop through and handle git directories ---
 for dir_path in "${candidate_dirs[@]}"; do
@@ -123,7 +124,7 @@ for dir_path in "${candidate_dirs[@]}"; do
         is_dirty=false
         is_ahead=false
         DIR_SEEN["$dir_path"]=1
-        echo "git: adding $dir_path to seen dirs: ${#DIR_SEEN[@]}"; 
+        [[ $DEBUG_LEVEL -ge 3 ]] && echo "git: adding $dir_path to seen dirs: ${#DIR_SEEN[@]}"; 
 
         if git -C "$dir_path" status --porcelain 2>/dev/null | grep -q '^[ M?]'; then
             is_dirty=true
@@ -136,36 +137,44 @@ for dir_path in "${candidate_dirs[@]}"; do
 
         git_verdict="git"
         match=false
-        if [[ "$MATCH_GIT_STATUS" == *dirty* && "$is_dirty" == true ]]; then
-            match=true
-            git_verdict="$git_verdict-dirty"
-        fi
 
-        if [[ "$MATCH_GIT_STATUS" == *ahead* && "$is_ahead" == true ]]; then
-            match=true
-            git_verdict="$git_verdict-ahead"
-        fi
+        [[ "$MATCH_GIT_STATUS" == *dirty* && "$is_dirty" == true ]] && match=true && git_verdict+="-dirty"
+        [[ "$MATCH_GIT_STATUS" == *ahead* && "$is_ahead" == true ]] && match=true && git_verdict+="-ahead"
+        [[ "$git_verdict" == "git" ]] && git_verdict+="-clean"
 
-        if [[ "$match" == true ]]; then
-            dest_path="$DEST_DIR/${dir_path#$SOURCE_DIR/}"
-            if $DRY_RUN; then
-                echo "[dry-run] would move git repo: $dir_path → $dest_path"
-            else
-                mkdir -p "$dest_path"
-                cp -a "$dir_path" "$dest_path/.."
-                echo "Moved git repo: $dir_path → $dest_path"
-            fi
-            log_entry "git" "" "$git_verdict" "" "" "" "$dir_path" "$dest_path"
-        else
-            log_entry "git" "" "git-clean" "" "" "" "$dir_path" ""
-        fi
+        # if [[ "$MATCH_GIT_STATUS" == *dirty* && "$is_dirty" == true ]]; then
+        #     match=true
+        #     git_verdict+="-dirty"
+        # fi
 
-        continue  # Always skip further processing of Git repos
+        # if [[ "$MATCH_GIT_STATUS" == *ahead* && "$is_ahead" == true ]]; then
+        #     match=true
+        #     git_verdict+="-ahead"
+        # fi
+
+
+        [[ "$match" == true ]] && handle_path_action "git" "move" "$dir_path" "" "$git_verdict" && continue
+
+        # if [[ "$match" == true ]]; then
+        #     dest_path="$DEST_DIR/${dir_path#$SOURCE_DIR/}"
+        #     if $DRY_RUN; then
+        #         echo "[dry-run] would move git repo: $dir_path → $dest_path"
+        #     else
+        #         mkdir -p "$dest_path"
+        #         cp -a "$dir_path" "$dest_path/.."
+        #         echo "Moved git repo: $dir_path → $dest_path"
+        #     fi
+        #     log_entry "git" "" "$git_verdict" "" "" "" "$dir_path" "$dest_path"
+        # else
+        #     log_entry "git" "" "git-clean" "" "" "" "$dir_path" ""
+        # fi
+
+        # continue  # Always skip further processing of Git repos
     fi
-    echo "git $dir_path seen dirs: ${#DIR_SEEN[@]}"
+    [[ $DEBUG_LEVEL -ge 3 ]] && echo "git $dir_path seen dirs: ${#DIR_SEEN[@]}"
 done
 
-echo "before sections seen dirs: ${#DIR_SEEN[@]}"
+[[ $DEBUG_LEVEL -ge 3 ]] && echo "before sections seen dirs: ${#DIR_SEEN[@]}"
 
 # --- Loop through all sections ---
 while read -r section; do
@@ -209,14 +218,17 @@ while read -r section; do
     # Only act on sections that use match_dir or match_contents (regex mode)
     [[ -n "$match_dir" || "${#match_contents[@]}" -gt 0 ]] || continue
 
-    echo "Section [$section] looking for directories matching criteria" 
+    [[ $DEBUG_LEVEL -ge 2 ]] && echo "Section [$section] looking for directories matching criteria" 
 
     # Loop through all candidate directories and apply rule if they match
     for dir_path in "${candidate_dirs[@]}"; do
 
         # if this directory has already been seen, don't bother with any other
         # steps
-        if [[ -n "${DIR_SEEN[$dir_path]:-}" ]]; then echo "$section: $dir_path already seen"; continue; fi
+        if [[ -n "${DIR_SEEN[$dir_path]:-}" ]]; then
+            [[ $DEBUG_LEVEL -ge 3 ]] && echo "$section: $dir_path already seen"
+            continue
+        fi
 
 
         # Check match_dir
@@ -228,21 +240,21 @@ while read -r section; do
         contents_match=false
         if [[ "${#match_contents[@]}" -gt 0 ]]; then
             all_found=true
-
+            [[ $DEBUG_LEVEL -ge 3 ]] && echo "starting contents_match on $dir_path"
             for regex in "${match_contents[@]}"; do
                 # For each required pattern, make sure at least one match exists in the directory
-                if ! find "$dir_path" -mindepth 1 -maxdepth 1 -printf '%f\n' | grep -E "$regex"; then
+                if ! find "$dir_path" -mindepth 1 -maxdepth 1 -printf '%f\n' | grep -qE "$regex"; then
                     all_found=false
                     break
                 fi
             done
-            #find "$dir_path" -mindepth 1 -maxdepth 1 -printf '%f\n' 
+            [[ $DEBUG_LEVEL -ge 3 ]] && echo "ending contents_match on $dir_path"
             $all_found && contents_match=true
         fi
 
         if [[ "$dir_matches" == true || "$contents_match" == true ]];  then
             DIR_SEEN["$dir_path"]=1
-            echo "$section: adding $dir_path to seen dirs: ${#DIR_SEEN[@]}"; 
+            [[ $DEBUG_LEVEL -ge 3 ]] && echo "$section: adding $dir_path to seen dirs: ${#DIR_SEEN[@]}"; 
             
             # ignore is for known temp stuff that doesn't need to show up in the 
             # log just keep going without logging... also, the presence of 
@@ -257,7 +269,7 @@ while read -r section; do
                 continue
             fi
             
-            echo "  → Applying rules from [$section] to $dir_path"
+            [[ $DEBUG_LEVEL -ge 2 ]] && echo "  → Applying rules from [$section] to $dir_path"
 
             if ! $has_criteria; then
                 # Whole-directory mode
@@ -345,35 +357,40 @@ while read -r section; do
             fi         
         
         fi
-        echo "dir $dir_path seen dirs: ${#DIR_SEEN[@]}"
+        [[ $DEBUG_LEVEL -ge 3 ]] && echo "dir $dir_path seen dirs: ${#DIR_SEEN[@]}"
     done    
-    echo "section $section seen dirs: ${#DIR_SEEN[@]}"
+    [[ $DEBUG_LEVEL -ge 3 ]] && echo "section $section seen dirs: ${#DIR_SEEN[@]}"
 done < <(jq -r '.section | keys[]' "$CONFIG_FILE")
 
-echo "before unmatched seen dirs: ${#DIR_SEEN[@]}"
+[[ $DEBUG_LEVEL -ge 3 ]] && echo "before unmatched seen dirs: ${#DIR_SEEN[@]}"
 
 # --- Handle unmatched top-level dirs if configured ---
 if jq -e '.unmatched_dirs' "$CONFIG_FILE" > /dev/null; then
   unmatched_action=$(jq -r '.unmatched_dirs.action // "log"' "$CONFIG_FILE")
 
   #readarray -t all_top_dirs < <(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -type d)
-  echo "start of unmatched seen dirs: ${#DIR_SEEN[@]}"
+  [[ $DEBUG_LEVEL -ge 3 ]] && echo "start of unmatched seen dirs: ${#DIR_SEEN[@]}"
 
   for dir_path in "${candidate_dirs[@]}"; do
-    if [[ -n "${DIR_SEEN[$dir_path]:-}" ]]; then echo "unmatched: $dir_path already seen"; continue; fi
-
-    dest_path="$DEST_DIR/${dir_path#$SOURCE_DIR/}"
-    if [[ "$unmatched_action" == "move" ]]; then
-        if $DRY_RUN; then
-            echo "[dry-run] would move unmatched dir: $dir_path → $dest_path"
-        else
-            mkdir -p "$dest_path"
-            cp -a "$dir_path" "$dest_path/.."
-            echo "Moved unmatched dir: $dir_path → $dest_path"
-        fi
-    else
-        dest_path=""
+    if [[ -n "${DIR_SEEN[$dir_path]:-}" ]]; then 
+        [[ $DEBUG_LEVEL -ge 3 ]] && echo "unmatched: $dir_path already seen"
+        continue
     fi
-    log_entry "unmatched_dirs" "" "unmatched" "" "" "" "$dir_path" "$dest_path"
+
+    handle_path_action "unmached_dirs" "$unmatched_action" "$dir_path"
+
+    # dest_path="$DEST_DIR/${dir_path#$SOURCE_DIR/}"
+    # if [[ "$unmatched_action" == "move" ]]; then
+    #     if $DRY_RUN; then
+    #         echo "[dry-run] would move unmatched dir: $dir_path → $dest_path"
+    #     else
+    #         mkdir -p "$dest_path"
+    #         cp -a "$dir_path" "$dest_path/.."
+    #         echo "Moved unmatched dir: $dir_path → $dest_path"
+    #     fi
+    # else
+    #     dest_path=""
+    # fi
+    # log_entry "unmatched_dirs" "" "unmatched" "" "" "" "$dir_path" "$dest_path"
   done
 fi

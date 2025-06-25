@@ -29,12 +29,12 @@
       },
       "minecraft_world": {
         "description": "Minecraft saved worlds",
-        "match_contents": ["level.dat","region"],
+        "match_contents": ["^level.dat$","^region$"],
         "action": "move"
       },
       "minecraft_game": {
         "description": "Minecraft full game instance",
-        "match_contents": ["servers.dat","saves"],
+        "match_contents": ["^servers.dat$","^saves$"],
         "action": "move"
       },
       "junk": {
