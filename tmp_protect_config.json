@@ -41,10 +41,31 @@
         "description": "Directories that really are tmp directories and shouldn't even clutter up the log file",
         "match_dir": "/(Rtmp|\\.org\\.chromium|skype-|java_prop_|ssh-|lu[0-9a-z].*\\.tmp|scoped_|lemminx-|scoped_dir|[{}]|vs\\.mc|VSTelem|VSRemoteControl|\\.|junk|acro.*_sbx|hsperfdata|appInsights-|CTXReceiverLogs|.*tmp$|Outlook Logging|opus4j|systemd-private-|rnnoise4j-|tmp[0-9a-z]+$|mozilla_|bla$|foo$)",
         "action": "ignore"
+      },
+      "files_to_keep": {
+        "description": "Top-level files in /tmp that might need to be kept",
+        "action": "move",
+        "extensions_whitelist": ["csv", "zip", "xlsx", "pdf", "mobi", "wav", "sql", "stl", "epub", "png", "sh", "xls", "jpg", "ogg", "odg", "txt", "html", "docx", "pptx", "mp3", "db", "ndjson", "webp", "py", "tsv", "eml", "rtf", "json", "slq", "accdb", "odt", "pbit", "xml", "midi", "ics", "xm0", "r", "svg"],
+        "regexp_blacklist": ["P.A[0-9]{4}.ACO", "usp_.*.sql", "backup_", "script_.*.sql", "qexpu", "sqlify", "foo", "Screenshot [0-9]{4}-[0-9]{2}-[0-9]{2}", "[#~{}]", "MSTeams Diagnostics Log", "-conf.xml$", "^tpx[A-Za-z0-9]{4,}$", "^cura-crash", "^file[A-Za-z0-9]{4,}$","^systemd-private-"],
+        "min-size": 1024,
+        "prioritize-by": ["age", "revsize"],
+        "size-limit": "500MB"
+      }
+      ,
+      "files_to_log": {
+        "description": "Top-level files in /tmp that we can log but probably will never miss",
+        "action": "log",
+        "extensions_blacklist": ["tmp", "xpi", "1", "0", "part", "js", "sb3", "thmx", "twbx", "dotx", "pbip", "csv#", "docx#", "xlsx#", "pptx#", "0:bluetooth", "0-usb-0:11:bluetooth", "lock", "toml", "properties"],
+        "regexp_blacklist": ["P.A[0-9]{4}.ACO", "usp_.*.sql", "backup_", "script_.*.sql", "qexpu", "sqlify", "foo", "Screenshot [0-9]{4}-[0-9]{2}-[0-9]{2}", "[#~{}]", "MSTeams Diagnostics Log", "-conf.xml$", "^tpx[A-Za-z0-9]{4,}$", "^cura-crash", "^file[A-Za-z0-9]{4,}$","^systemd-private-"],
+        "min-size": 1024,
+        "prioritize-by": ["age", "revsize"],
+        "size-limit": "500MB"
       }
     },
     "work_in_progress": {
+        "skip": "true",
         "top_level_files": {
+            "skip": "true",
             "description": "Top-level files in /tmp",
             "match": "top_level_files",
             "action": "move",
@@ -56,6 +77,7 @@
             "size-limit": "500MB"
           },
           "top_level_nameless": {
+            "skip": "true",
             "description": "Files without extensions at /tmp",
             "match": "top_level_files",
             "action": "move",
