@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_CONFIG="$SCRIPT_DIR/tmp_protect_config.json"
 CONFIG_FILE="$DEFAULT_CONFIG"
 DRY_RUN=true  # Always forced to true for now
-DEBUG_LEVEL=2
+DEBUG_LEVEL=0
 
 # --- Parse options ---
 while [[ $# -gt 0 ]]; do
